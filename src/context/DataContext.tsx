@@ -340,12 +340,13 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       records.forEach((r) => {
         const subjs = subject ? [subject] : SUBJECTS;
         subjs.forEach((subj) => {
-          const val = r.internal1[subj];
-          if (val !== null && val !== undefined) {
+          const rawVal = r.internal1[subj];
+          if (rawVal !== null && rawVal !== undefined && (rawVal as any) !== '') {
             enteredCount++;
-            if (val < 0 || val > maxMarks.internal1) {
+            const num = Number(rawVal);
+            if (isNaN(num) || num < 0 || num > maxMarks.internal1) {
               errors.push(
-                `${r.name} (S.No ${r.sno}): Mark ${val} for "${subj}" exceeds maximum allowed (${maxMarks.internal1})`
+                `${r.name} (S.No ${r.sno}): Mark ${rawVal} for "${subj}" exceeds maximum allowed (${maxMarks.internal1})`
               );
             }
           }
@@ -354,40 +355,55 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (errors.length > 0) return { success: false, errors };
 
-      // 2. Save each student's entered record separately
-      // Unentered values remain NULL; existing saved values must not be overwritten by blanks
+      // 2. Build upsert payloads matching exact schema:
+      // student_id, exam_type: 'internal1', subject, marks (numeric value or null), updated_at
+      const payloads: {
+        student_id: string;
+        exam_type: 'internal1';
+        subject: string;
+        marks: number | null;
+        updated_at: string;
+      }[] = [];
+
       for (const r of records) {
         const subjs = subject ? [subject] : SUBJECTS;
         for (const subj of subjs) {
-          const val = r.internal1[subj];
-          if (val !== null && val !== undefined) {
-            try {
-              const { error: updErr } = await supabase
-                .from('student_marks')
-                .update({
-                  marks: val,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq('student_id', r.studentId)
-                .eq('subject', subj)
-                .eq('exam_type', 'internal1');
+          const rawVal = r.internal1[subj];
+          const val =
+            rawVal !== null && rawVal !== undefined && (rawVal as any) !== ''
+              ? Number(rawVal)
+              : null;
 
-              if (updErr) {
-                errors.push(`Failed to save marks for ${r.name} in "${subj}": ${updErr.message}`);
-              } else {
-                const cached = initialDbRecordsRef.current.get(r.studentId);
-                if (cached) cached.internal1[subj] = val;
-              }
-            } catch (err: any) {
-              errors.push(`Network error saving marks for ${r.name}: ${err?.message}`);
-            }
-          }
+          payloads.push({
+            student_id: r.studentId,
+            exam_type: 'internal1',
+            subject: subj,
+            marks: val,
+            updated_at: new Date().toISOString(),
+          });
         }
       }
 
-      return { success: errors.length === 0, errors, enteredCount };
+      try {
+        const { error: upsertErr } = await supabase
+          .from('student_marks')
+          .upsert(payloads, { onConflict: 'student_id,exam_type,subject' });
+
+        if (upsertErr) {
+          errors.push(`Failed to save marks: ${upsertErr.message}`);
+          return { success: false, errors };
+        }
+
+        // 3. Refresh UI from Supabase after successful save
+        await loadData();
+      } catch (err: any) {
+        errors.push(`Network or server error saving marks: ${err?.message || 'Unknown error'}`);
+        return { success: false, errors };
+      }
+
+      return { success: true, errors: [], enteredCount };
     },
-    [records, maxMarks.internal1]
+    [records, maxMarks.internal1, loadData]
   );
 
   // ── Save Internal 2 Marks to Supabase ──
@@ -400,12 +416,13 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       records.forEach((r) => {
         const subjs = subject ? [subject] : SUBJECTS;
         subjs.forEach((subj) => {
-          const val = r.internal2[subj];
-          if (val !== null && val !== undefined) {
+          const rawVal = r.internal2[subj];
+          if (rawVal !== null && rawVal !== undefined && (rawVal as any) !== '') {
             enteredCount++;
-            if (val < 0 || val > maxMarks.internal2) {
+            const num = Number(rawVal);
+            if (isNaN(num) || num < 0 || num > maxMarks.internal2) {
               errors.push(
-                `${r.name} (S.No ${r.sno}): Mark ${val} for "${subj}" exceeds maximum allowed (${maxMarks.internal2})`
+                `${r.name} (S.No ${r.sno}): Mark ${rawVal} for "${subj}" exceeds maximum allowed (${maxMarks.internal2})`
               );
             }
           }
@@ -414,40 +431,55 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (errors.length > 0) return { success: false, errors };
 
-      // 2. Save each student's entered record separately
-      // Unentered values remain NULL; existing saved values must not be overwritten by blanks
+      // 2. Build upsert payloads matching exact schema:
+      // student_id, exam_type: 'internal2', subject, marks (numeric value or null), updated_at
+      const payloads: {
+        student_id: string;
+        exam_type: 'internal2';
+        subject: string;
+        marks: number | null;
+        updated_at: string;
+      }[] = [];
+
       for (const r of records) {
         const subjs = subject ? [subject] : SUBJECTS;
         for (const subj of subjs) {
-          const val = r.internal2[subj];
-          if (val !== null && val !== undefined) {
-            try {
-              const { error: updErr } = await supabase
-                .from('student_marks')
-                .update({
-                  marks: val,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq('student_id', r.studentId)
-                .eq('subject', subj)
-                .eq('exam_type', 'internal2');
+          const rawVal = r.internal2[subj];
+          const val =
+            rawVal !== null && rawVal !== undefined && (rawVal as any) !== ''
+              ? Number(rawVal)
+              : null;
 
-              if (updErr) {
-                errors.push(`Failed to save marks for ${r.name} in "${subj}": ${updErr.message}`);
-              } else {
-                const cached = initialDbRecordsRef.current.get(r.studentId);
-                if (cached) cached.internal2[subj] = val;
-              }
-            } catch (err: any) {
-              errors.push(`Network error saving marks for ${r.name}: ${err?.message}`);
-            }
-          }
+          payloads.push({
+            student_id: r.studentId,
+            exam_type: 'internal2',
+            subject: subj,
+            marks: val,
+            updated_at: new Date().toISOString(),
+          });
         }
       }
 
-      return { success: errors.length === 0, errors, enteredCount };
+      try {
+        const { error: upsertErr } = await supabase
+          .from('student_marks')
+          .upsert(payloads, { onConflict: 'student_id,exam_type,subject' });
+
+        if (upsertErr) {
+          errors.push(`Failed to save marks: ${upsertErr.message}`);
+          return { success: false, errors };
+        }
+
+        // 3. Refresh UI from Supabase after successful save
+        await loadData();
+      } catch (err: any) {
+        errors.push(`Network or server error saving marks: ${err?.message || 'Unknown error'}`);
+        return { success: false, errors };
+      }
+
+      return { success: true, errors: [], enteredCount };
     },
-    [records, maxMarks.internal2]
+    [records, maxMarks.internal2, loadData]
   );
 
   const getStudentRecord = useCallback(
