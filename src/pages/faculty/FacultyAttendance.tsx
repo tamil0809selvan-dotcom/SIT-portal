@@ -14,7 +14,7 @@ import {
 import { useData } from '../../context/DataContext';
 
 const FacultyAttendance: React.FC = () => {
-  const { records, updateAttendance, saveAttendance, maxMarks } = useData();
+  const { records, updateAttendance, saveAttendance, maxMarks, loading: dataLoading } = useData();
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [saving, setSaving] = useState(false);
@@ -38,18 +38,18 @@ const FacultyAttendance: React.FC = () => {
     [updateAttendance]
   );
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setSaving(true);
-    setTimeout(() => {
-      const result = saveAttendance();
+    try {
+      const result = await saveAttendance();
       if (result.success) {
         const count = result.enteredCount ?? 0;
         setMessage({
           type: 'success',
           text:
             count > 0
-              ? `Attendance saved successfully! (${count} of ${records.length} students recorded)`
-              : `Attendance saved. All ${records.length} records are currently unentered (empty).`,
+              ? `Attendance saved successfully! (${count} of ${records.length} students recorded in database)`
+              : `Attendance saved. All ${records.length} records are currently unentered (empty/null).`,
         });
       } else {
         setMessage({
@@ -59,9 +59,12 @@ const FacultyAttendance: React.FC = () => {
             `Validation failed. Please verify attendance percentages (0–${maxMarks.attendance}%).`,
         });
       }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err?.message || 'Failed to save attendance to Supabase.' });
+    } finally {
       setSaving(false);
       setTimeout(() => setMessage(null), 5000);
-    }, 250);
+    }
   };
 
   const filtered = searchTerm.trim()
@@ -151,7 +154,16 @@ const FacultyAttendance: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filtered.length === 0 ? (
+              {dataLoading ? (
+                <tr>
+                  <td colSpan={4} className="text-center py-12 text-sm text-slate-500">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <RefreshCw className="w-5 h-5 animate-spin text-emerald-600" />
+                      <span>Loading attendance records from Supabase…</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : filtered.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="text-center py-10 text-sm text-slate-400">
                     No students found matching your search.

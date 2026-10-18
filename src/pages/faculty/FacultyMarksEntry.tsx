@@ -21,16 +21,25 @@ interface FacultyMarksEntryProps {
 }
 
 const FacultyMarksEntry: React.FC<FacultyMarksEntryProps> = ({ examNumber }) => {
-  const { records, updateInternal1, updateInternal2, updateMaxMark, saveInternal1, saveInternal2, maxMarks } = useData();
+  const {
+    records,
+    updateInternal1,
+    updateInternal2,
+    updateMaxMark,
+    saveInternal1,
+    saveInternal2,
+    maxMarks,
+    loading: dataLoading,
+  } = useData();
   const [selectedSubject, setSelectedSubject] = useState<SubjectName>(SUBJECTS[0]);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const maxMark  = examNumber === 1 ? maxMarks.internal1  : maxMarks.internal2;
-  const field    = examNumber === 1 ? 'internal1'          : 'internal2';
-  const updateFn = examNumber === 1 ? updateInternal1      : updateInternal2;
-  const saveFn   = examNumber === 1 ? saveInternal1        : saveInternal2;
+  const maxMark = examNumber === 1 ? maxMarks.internal1 : maxMarks.internal2;
+  const field = examNumber === 1 ? 'internal1' : 'internal2';
+  const updateFn = examNumber === 1 ? updateInternal1 : updateInternal2;
+  const saveFn = examNumber === 1 ? saveInternal1 : saveInternal2;
 
   const handleMaxMarkChange = (valStr: string) => {
     const cleaned = valStr.replace(/[^0-9]/g, '').slice(0, 3);
@@ -38,44 +47,52 @@ const FacultyMarksEntry: React.FC<FacultyMarksEntryProps> = ({ examNumber }) => 
     updateMaxMark(field, num);
   };
 
-  const handleChange = useCallback((sno: number, value: string) => {
-    // Allow blank input while editing / unentered state
-    if (value === '') {
-      updateFn(sno, selectedSubject, null);
-      return;
-    }
-    // Numbers only, maximum 3 digits
-    const cleaned = value.replace(/[^0-9]/g, '').slice(0, 3);
-    if (cleaned === '') {
-      updateFn(sno, selectedSubject, null);
-      return;
-    }
-    const num = parseInt(cleaned, 10);
-    updateFn(sno, selectedSubject, num);
-  }, [updateFn, selectedSubject]);
+  const handleChange = useCallback(
+    (sno: number, value: string) => {
+      // Allow blank input while editing / unentered state
+      if (value === '') {
+        updateFn(sno, selectedSubject, null);
+        return;
+      }
+      // Numbers only, maximum 3 digits
+      const cleaned = value.replace(/[^0-9]/g, '').slice(0, 3);
+      if (cleaned === '') {
+        updateFn(sno, selectedSubject, null);
+        return;
+      }
+      const num = parseInt(cleaned, 10);
+      updateFn(sno, selectedSubject, num);
+    },
+    [updateFn, selectedSubject]
+  );
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setSaving(true);
-    setTimeout(() => {
-      const result = saveFn(selectedSubject);
+    try {
+      const result = await saveFn(selectedSubject);
       if (result.success) {
         const count = result.enteredCount ?? 0;
         setMessage({
           type: 'success',
           text:
             count > 0
-              ? `Internal Exam ${examNumber} marks for "${selectedSubject}" saved successfully! (${count} of ${records.length} students recorded)`
-              : `Internal Exam ${examNumber} marks for "${selectedSubject}" saved. All fields are currently unentered (empty).`,
+              ? `Internal Exam ${examNumber} marks for "${selectedSubject}" saved successfully to Supabase! (${count} of ${records.length} students recorded)`
+              : `Internal Exam ${examNumber} marks for "${selectedSubject}" saved. All fields are currently unentered (empty/null).`,
         });
       } else {
         setMessage({
           type: 'error',
-          text: result.errors[0] ?? `Validation failed. Please ensure marks are between 0 and ${maxMark}.`,
+          text:
+            result.errors[0] ??
+            `Validation failed. Please ensure marks are between 0 and ${maxMark}.`,
         });
       }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err?.message || 'Failed to save marks to Supabase.' });
+    } finally {
       setSaving(false);
       setTimeout(() => setMessage(null), 5000);
-    }, 250);
+    }
   };
 
   const filtered = searchTerm.trim()
@@ -238,7 +255,16 @@ const FacultyMarksEntry: React.FC<FacultyMarksEntryProps> = ({ examNumber }) => 
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filtered.length === 0 ? (
+              {dataLoading ? (
+                <tr>
+                  <td colSpan={4} className="text-center py-12 text-sm text-slate-500">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <RefreshCw className="w-5 h-5 animate-spin text-royal-600" />
+                      <span>Loading marks records from Supabase…</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : filtered.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="text-center py-10 text-sm text-slate-400">
                     No students found matching your search.

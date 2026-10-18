@@ -10,9 +10,20 @@ import { StudentUser } from '../../types';
 
 const StudentAttendance: React.FC = () => {
   const { user } = useAuth();
-  const { getStudentRecord } = useData();
+  const { getStudentRecord, loading } = useData();
   const student = user as StudentUser;
-  const record = getStudentRecord(student.id);
+  const record = student ? getStudentRecord(student.id) : undefined;
+
+  if (loading) {
+    return (
+      <div className="max-w-2xl mx-auto flex items-center justify-center py-20">
+        <div className="flex flex-col items-center gap-3 text-slate-500">
+          <div className="w-8 h-8 border-3 border-emerald-600/30 border-t-emerald-600 rounded-full animate-spin" />
+          <p className="text-sm font-medium">Fetching attendance record from Supabase…</p>
+        </div>
+      </div>
+    );
+  }
 
   const rawAttendance = record?.attendance;
   const hasAttendance = rawAttendance !== null && rawAttendance !== undefined;

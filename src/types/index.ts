@@ -7,7 +7,7 @@ export type UserRole = 'student' | 'faculty';
 export interface User {
   id: string;
   name: string;
-  password: string;
+  password?: string;
   role: UserRole;
   department: string;
   avatar?: string;
@@ -79,4 +79,41 @@ export interface AuthState {
   isAuthenticated: boolean;
   user: StudentUser | FacultyUser | null;
   role: UserRole | null;
+  loading: boolean;
+  error?: string | null;
+}
+
+// ── Supabase Database Row Types ──────────────
+export interface UserProfileRow {
+  user_id: string;
+  role: UserRole;
+  student_id: string | null;
+  created_at?: string;
+}
+
+export interface StudentRow {
+  sno: number;
+  student_id: string;
+  name: string;
+  department: string;
+}
+
+export interface AttendanceRow {
+  student_id: string;
+  percentage: number | null;
+  updated_at?: string;
+}
+
+export interface StudentMarkRow {
+  id?: string | number;
+  student_id: string;
+  subject: string;
+  exam_type: string;
+  marks: number | null;
+  updated_at?: string;
+}
+
+export interface MaxMarksConfigRow {
+  exam_type: string;
+  maximum: number;
 }

@@ -30,21 +30,23 @@ const LoginPage: React.FC<LoginPageProps> = ({ role }) => {
 
   const isStudent = role === 'student';
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
-    // Simulate small network delay
-    setTimeout(() => {
-      const result = login(id, password, role);
+    try {
+      const result = await login(id, password, role);
       if (result.success) {
         navigate(`/${role}/dashboard`, { replace: true });
       } else {
         setError(result.error || 'Login failed');
       }
+    } catch (err: any) {
+      setError(err?.message || 'Login failed');
+    } finally {
       setLoading(false);
-    }, 400);
+    }
   };
 
   const handleAutofill = () => {

@@ -1,121 +1,227 @@
 // ──────────────────────────────────────────────
-// Data Context: attendance & subject-wise marks with localStorage
+// Data Context: Attendance & Subject-Wise Marks Integrated with Supabase
 // ──────────────────────────────────────────────
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import { StudentRecord, MaxMarksConfig, SUBJECTS } from '../types';
-import { generateStudentRecords, MAX_MARKS } from '../data/demoData';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import { StudentRecord, MaxMarksConfig, SUBJECTS, SubjectMarksMap } from '../types';
+import { MAX_MARKS, generateStudentRecords } from '../data/demoData';
+import { supabase } from '../supabase';
+import { useAuth } from './AuthContext';
 
 interface DataContextType {
   records: StudentRecord[];
   maxMarks: MaxMarksConfig;
+  loading: boolean;
+  error: string | null;
+  refreshData: () => Promise<void>;
   updateAttendance: (sno: number, value: number | null) => void;
   updateInternal1: (sno: number, subject: string, value: number | null) => void;
   updateInternal2: (sno: number, subject: string, value: number | null) => void;
-  updateMaxMark: (field: 'internal1' | 'internal2' | 'attendance', value: number) => void;
-  saveAttendance: () => { success: boolean; errors: string[]; enteredCount?: number };
-  saveInternal1: (subject?: string) => { success: boolean; errors: string[]; enteredCount?: number };
-  saveInternal2: (subject?: string) => { success: boolean; errors: string[]; enteredCount?: number };
+  updateMaxMark: (field: 'internal1' | 'internal2' | 'attendance', value: number) => Promise<void>;
+  saveAttendance: () => Promise<{ success: boolean; errors: string[]; enteredCount?: number }>;
+  saveInternal1: (subject?: string) => Promise<{ success: boolean; errors: string[]; enteredCount?: number }>;
+  saveInternal2: (subject?: string) => Promise<{ success: boolean; errors: string[]; enteredCount?: number }>;
   getStudentRecord: (studentId: string) => StudentRecord | undefined;
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
 
-// Clean storage key ensuring no legacy sample arrays contaminate state
-const RECORDS_KEY = 'sit_portal_records_clean_v1';
-const MAX_MARKS_KEY = 'sit_portal_max_marks';
-
-// Purge any legacy keys that previously held hardcoded sample arrays
-const LEGACY_STORAGE_KEYS = [
-  'sit_portal_records',
-  'sit_portal_records_v1',
-  'sit_portal_records_v2',
-  'sit_portal_records_v3',
-  'sit_portal_records_v4',
-];
-
-if (typeof window !== 'undefined' && window.localStorage) {
-  try {
-    LEGACY_STORAGE_KEYS.forEach((k) => window.localStorage.removeItem(k));
-  } catch {
-    /* ignore */
-  }
-}
-
-/** Detects if data contains signatures of old hardcoded sample marks or attendance */
-const containsLegacySampleData = (data: any[]): boolean => {
-  if (!Array.isArray(data) || data.length === 0) return false;
-  const r0 = data[0];
-  const r1 = data[1];
-  const r2 = data[2];
-
-  // Old sample attendance signature: 77, 90, 79...
-  if (r0?.attendance === 77 && r1?.attendance === 90 && r2?.attendance === 79) {
-    return true;
-  }
-  // Old sample marks signature: 75, 82, 89...
-  if (
-    r0?.internal1?.['Discrete Mathematics'] === 75 &&
-    r1?.internal1?.['Discrete Mathematics'] === 82
-  ) {
-    return true;
-  }
-  return false;
-};
-
 export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [records, setRecords] = useState<StudentRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem(RECORDS_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as any[];
-        // If data is valid and not contaminated by legacy sample arrays, use it
-        if (
-          Array.isArray(parsed) &&
-          parsed.length === 60 &&
-          !containsLegacySampleData(parsed) &&
-          parsed.every(
-            (r) =>
-              r.internal1 &&
-              typeof r.internal1 === 'object' &&
-              r.internal2 &&
-              typeof r.internal2 === 'object' &&
-              SUBJECTS.every((s) => s in r.internal1 && s in r.internal2)
-          )
-        ) {
-          return parsed as StudentRecord[];
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-    // Clean initial state: all 60 students with null (empty) attendance and null (empty) marks
-    return generateStudentRecords();
-  });
+  const { isAuthenticated, role, user } = useAuth();
+  const [records, setRecords] = useState<StudentRecord[]>([]);
+  const [maxMarks, setMaxMarks] = useState<MaxMarksConfig>(MAX_MARKS);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const [maxMarks, setMaxMarks] = useState<MaxMarksConfig>(() => {
-    try {
-      const saved = localStorage.getItem(MAX_MARKS_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as MaxMarksConfig;
-        if (parsed && typeof parsed.internal1 === 'number' && typeof parsed.internal2 === 'number') {
-          return parsed;
-        }
-      }
-    } catch {
-      /* ignore */
+  // Keep a reference of records originally loaded from Supabase so we know existing saved values
+  const initialDbRecordsRef = useRef<Map<string, { attendance: number | null; internal1: SubjectMarksMap; internal2: SubjectMarksMap }>>(new Map());
+
+  // ── Load Data from Supabase according to Role ──
+  const loadData = useCallback(async () => {
+    if (!isAuthenticated || !role || !user) {
+      setRecords([]);
+      setLoading(false);
+      return;
     }
-    return MAX_MARKS;
-  });
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      // 1. Fetch max marks config
+      const { data: maxRows, error: maxErr } = await supabase
+        .from('max_marks_config')
+        .select('exam_type, maximum');
+
+      if (!maxErr && maxRows && maxRows.length > 0) {
+        const newMax: MaxMarksConfig = { ...MAX_MARKS };
+        maxRows.forEach((r) => {
+          const typeStr = (r.exam_type || '').toLowerCase();
+          const val = Number(r.maximum);
+          if (!isNaN(val) && val > 0) {
+            if (typeStr.includes('1')) newMax.internal1 = val;
+            else if (typeStr.includes('2')) newMax.internal2 = val;
+            else if (typeStr.includes('attend')) newMax.attendance = val;
+          }
+        });
+        setMaxMarks(newMax);
+      }
+
+      if (role === 'faculty') {
+        // Faculty: Read all 60 students, all attendance, all marks
+        const [studentsRes, attRes, marksRes] = await Promise.all([
+          supabase.from('students').select('sno, student_id, name, department').order('sno', { ascending: true }),
+          supabase.from('attendance').select('student_id, percentage'),
+          supabase.from('student_marks').select('id, student_id, subject, exam_type, marks'),
+        ]);
+
+        if (studentsRes.error) {
+          throw new Error(`Failed to load students: ${studentsRes.error.message}`);
+        }
+
+        const studentRows = studentsRes.data || [];
+
+        // Build attendance map
+        const attMap = new Map<string, number | null>();
+        if (attRes.data) {
+          attRes.data.forEach((r) => {
+            attMap.set(r.student_id, r.percentage !== null && r.percentage !== undefined ? Number(r.percentage) : null);
+          });
+        }
+
+        // Build marks map
+        const marksMap = new Map<string, { internal1: SubjectMarksMap; internal2: SubjectMarksMap }>();
+        if (marksRes.data) {
+          marksRes.data.forEach((r) => {
+            if (!marksMap.has(r.student_id)) {
+              marksMap.set(r.student_id, { internal1: {}, internal2: {} });
+            }
+            const stuMarks = marksMap.get(r.student_id)!;
+            const examTypeStr = (r.exam_type || '').toLowerCase();
+            const val = r.marks !== null && r.marks !== undefined ? Number(r.marks) : null;
+
+            if (examTypeStr.includes('2')) {
+              stuMarks.internal2[r.subject] = val;
+            } else {
+              stuMarks.internal1[r.subject] = val;
+            }
+          });
+        }
+
+        // Combine into StudentRecord[]
+        const combinedRecords: StudentRecord[] = studentRows.map((stu) => {
+          const stuMarks = marksMap.get(stu.student_id);
+          const internal1: SubjectMarksMap = {};
+          const internal2: SubjectMarksMap = {};
+
+          SUBJECTS.forEach((subj) => {
+            internal1[subj] = stuMarks?.internal1[subj] ?? null;
+            internal2[subj] = stuMarks?.internal2[subj] ?? null;
+          });
+
+          const attendance = attMap.get(stu.student_id) ?? null;
+
+          return {
+            sno: stu.sno,
+            studentId: stu.student_id,
+            name: stu.name,
+            attendance,
+            internal1,
+            internal2,
+          };
+        });
+
+        // Cache initial values
+        const dbCache = new Map();
+        combinedRecords.forEach((r) => {
+          dbCache.set(r.studentId, {
+            attendance: r.attendance,
+            internal1: { ...r.internal1 },
+            internal2: { ...r.internal2 },
+          });
+        });
+        initialDbRecordsRef.current = dbCache;
+
+        setRecords(combinedRecords);
+      } else {
+        // Student: Read only own profile, attendance, and marks
+        const studentId = user.id;
+
+        const [studentRes, attRes, marksRes] = await Promise.all([
+          supabase.from('students').select('sno, student_id, name, department').eq('student_id', studentId).maybeSingle(),
+          supabase.from('attendance').select('student_id, percentage').eq('student_id', studentId).maybeSingle(),
+          supabase.from('student_marks').select('id, student_id, subject, exam_type, marks').eq('student_id', studentId),
+        ]);
+
+        if (studentRes.error) {
+          console.warn('[DataContext] Student record query warning:', studentRes.error.message);
+        }
+
+        const stu = studentRes.data || {
+          sno: 1,
+          student_id: studentId,
+          name: user.name,
+          department: user.department,
+        };
+
+        const internal1: SubjectMarksMap = {};
+        const internal2: SubjectMarksMap = {};
+        SUBJECTS.forEach((subj) => {
+          internal1[subj] = null;
+          internal2[subj] = null;
+        });
+
+        if (marksRes.data) {
+          marksRes.data.forEach((r) => {
+            const examTypeStr = (r.exam_type || '').toLowerCase();
+            const val = r.marks !== null && r.marks !== undefined ? Number(r.marks) : null;
+            if (examTypeStr.includes('2')) {
+              internal2[r.subject] = val;
+            } else {
+              internal1[r.subject] = val;
+            }
+          });
+        }
+
+        const attendance =
+          attRes.data && attRes.data.percentage !== null && attRes.data.percentage !== undefined
+            ? Number(attRes.data.percentage)
+            : null;
+
+        const singleRecord: StudentRecord = {
+          sno: stu.sno,
+          studentId: stu.student_id,
+          name: stu.name,
+          attendance,
+          internal1,
+          internal2,
+        };
+
+        const dbCache = new Map();
+        dbCache.set(singleRecord.studentId, {
+          attendance: singleRecord.attendance,
+          internal1: { ...singleRecord.internal1 },
+          internal2: { ...singleRecord.internal2 },
+        });
+        initialDbRecordsRef.current = dbCache;
+
+        setRecords([singleRecord]);
+      }
+    } catch (err: any) {
+      console.error('[DataContext] Error loading Supabase data:', err);
+      setError(err?.message || 'Failed to load records from Supabase.');
+      // Fallback clean template in case of offline/network failure
+      setRecords(generateStudentRecords());
+    } finally {
+      setLoading(false);
+    }
+  }, [isAuthenticated, role, user]);
 
   useEffect(() => {
-    localStorage.setItem(RECORDS_KEY, JSON.stringify(records));
-  }, [records]);
+    loadData();
+  }, [loadData]);
 
-  useEffect(() => {
-    localStorage.setItem(MAX_MARKS_KEY, JSON.stringify(maxMarks));
-  }, [maxMarks]);
-
+  // ── Local In-Memory Updates (prior to saving) ──
   const updateAttendance = useCallback((sno: number, value: number | null) => {
     setRecords((prev) => prev.map((r) => (r.sno === sno ? { ...r, attendance: value } : r)));
   }, []);
@@ -150,15 +256,38 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
   }, []);
 
-  const updateMaxMark = useCallback((field: 'internal1' | 'internal2' | 'attendance', value: number) => {
-    const validVal = Math.max(1, Math.min(999, Math.round(value)));
-    setMaxMarks((prev) => ({ ...prev, [field]: validVal }));
-  }, []);
+  const updateMaxMark = useCallback(
+    async (field: 'internal1' | 'internal2' | 'attendance', value: number) => {
+      const validVal = Math.max(1, Math.min(999, Math.round(value)));
+      setMaxMarks((prev) => ({ ...prev, [field]: validVal }));
 
-  const saveAttendance = useCallback((): { success: boolean; errors: string[]; enteredCount?: number } => {
+      try {
+        const { error: updErr } = await supabase
+          .from('max_marks_config')
+          .update({ maximum: validVal })
+          .eq('exam_type', field);
+
+        if (updErr) {
+          // If row did not exist yet, upsert
+          await supabase.from('max_marks_config').upsert({ exam_type: field, maximum: validVal });
+        }
+      } catch (err) {
+        console.error('[DataContext] Error updating max mark in Supabase:', err);
+      }
+    },
+    []
+  );
+
+  // ── Save Attendance to Supabase ──
+  const saveAttendance = useCallback(async (): Promise<{
+    success: boolean;
+    errors: string[];
+    enteredCount?: number;
+  }> => {
     const errors: string[] = [];
     let enteredCount = 0;
 
+    // 1. Validation
     records.forEach((r) => {
       if (r.attendance !== null && r.attendance !== undefined) {
         enteredCount++;
@@ -171,80 +300,152 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     if (errors.length > 0) return { success: false, errors };
-    localStorage.setItem(RECORDS_KEY, JSON.stringify(records));
-    return { success: true, errors: [], enteredCount };
+
+    // 2. Save each student's entered record separately
+    // Unentered values remain NULL; existing saved values must not be overwritten by blanks
+    for (const r of records) {
+      if (r.attendance !== null && r.attendance !== undefined) {
+        try {
+          const { error: updErr } = await supabase
+            .from('attendance')
+            .update({
+              percentage: r.attendance,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('student_id', r.studentId);
+
+          if (updErr) {
+            errors.push(`Failed to save attendance for ${r.name} (${r.studentId}): ${updErr.message}`);
+          } else {
+            // Update cache
+            const cached = initialDbRecordsRef.current.get(r.studentId);
+            if (cached) cached.attendance = r.attendance;
+          }
+        } catch (err: any) {
+          errors.push(`Network error saving attendance for ${r.name}: ${err?.message}`);
+        }
+      }
+    }
+
+    return { success: errors.length === 0, errors, enteredCount };
   }, [records, maxMarks.attendance]);
 
+  // ── Save Internal 1 Marks to Supabase ──
   const saveInternal1 = useCallback(
-    (subject?: string): { success: boolean; errors: string[]; enteredCount?: number } => {
+    async (subject?: string): Promise<{ success: boolean; errors: string[]; enteredCount?: number }> => {
       const errors: string[] = [];
       let enteredCount = 0;
 
+      // 1. Validation
       records.forEach((r) => {
-        if (subject) {
-          const val = r.internal1[subject];
+        const subjs = subject ? [subject] : SUBJECTS;
+        subjs.forEach((subj) => {
+          const val = r.internal1[subj];
           if (val !== null && val !== undefined) {
             enteredCount++;
             if (val < 0 || val > maxMarks.internal1) {
               errors.push(
-                `${r.name} (S.No ${r.sno}): Mark ${val} for "${subject}" exceeds maximum allowed (${maxMarks.internal1})`
+                `${r.name} (S.No ${r.sno}): Mark ${val} for "${subj}" exceeds maximum allowed (${maxMarks.internal1})`
               );
             }
           }
-        } else {
-          Object.entries(r.internal1).forEach(([subj, val]) => {
-            if (val !== null && val !== undefined) {
-              enteredCount++;
-              if (val < 0 || val > maxMarks.internal1) {
-                errors.push(
-                  `${r.name} (S.No ${r.sno}): Mark ${val} for "${subj}" exceeds maximum allowed (${maxMarks.internal1})`
-                );
-              }
-            }
-          });
-        }
+        });
       });
 
       if (errors.length > 0) return { success: false, errors };
-      localStorage.setItem(RECORDS_KEY, JSON.stringify(records));
-      return { success: true, errors: [], enteredCount };
+
+      // 2. Save each student's entered record separately
+      // Unentered values remain NULL; existing saved values must not be overwritten by blanks
+      for (const r of records) {
+        const subjs = subject ? [subject] : SUBJECTS;
+        for (const subj of subjs) {
+          const val = r.internal1[subj];
+          if (val !== null && val !== undefined) {
+            try {
+              const { error: updErr } = await supabase
+                .from('student_marks')
+                .update({
+                  marks: val,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('student_id', r.studentId)
+                .eq('subject', subj)
+                .eq('exam_type', 'internal1');
+
+              if (updErr) {
+                errors.push(`Failed to save marks for ${r.name} in "${subj}": ${updErr.message}`);
+              } else {
+                const cached = initialDbRecordsRef.current.get(r.studentId);
+                if (cached) cached.internal1[subj] = val;
+              }
+            } catch (err: any) {
+              errors.push(`Network error saving marks for ${r.name}: ${err?.message}`);
+            }
+          }
+        }
+      }
+
+      return { success: errors.length === 0, errors, enteredCount };
     },
     [records, maxMarks.internal1]
   );
 
+  // ── Save Internal 2 Marks to Supabase ──
   const saveInternal2 = useCallback(
-    (subject?: string): { success: boolean; errors: string[]; enteredCount?: number } => {
+    async (subject?: string): Promise<{ success: boolean; errors: string[]; enteredCount?: number }> => {
       const errors: string[] = [];
       let enteredCount = 0;
 
+      // 1. Validation
       records.forEach((r) => {
-        if (subject) {
-          const val = r.internal2[subject];
+        const subjs = subject ? [subject] : SUBJECTS;
+        subjs.forEach((subj) => {
+          const val = r.internal2[subj];
           if (val !== null && val !== undefined) {
             enteredCount++;
             if (val < 0 || val > maxMarks.internal2) {
               errors.push(
-                `${r.name} (S.No ${r.sno}): Mark ${val} for "${subject}" exceeds maximum allowed (${maxMarks.internal2})`
+                `${r.name} (S.No ${r.sno}): Mark ${val} for "${subj}" exceeds maximum allowed (${maxMarks.internal2})`
               );
             }
           }
-        } else {
-          Object.entries(r.internal2).forEach(([subj, val]) => {
-            if (val !== null && val !== undefined) {
-              enteredCount++;
-              if (val < 0 || val > maxMarks.internal2) {
-                errors.push(
-                  `${r.name} (S.No ${r.sno}): Mark ${val} for "${subj}" exceeds maximum allowed (${maxMarks.internal2})`
-                );
-              }
-            }
-          });
-        }
+        });
       });
 
       if (errors.length > 0) return { success: false, errors };
-      localStorage.setItem(RECORDS_KEY, JSON.stringify(records));
-      return { success: true, errors: [], enteredCount };
+
+      // 2. Save each student's entered record separately
+      // Unentered values remain NULL; existing saved values must not be overwritten by blanks
+      for (const r of records) {
+        const subjs = subject ? [subject] : SUBJECTS;
+        for (const subj of subjs) {
+          const val = r.internal2[subj];
+          if (val !== null && val !== undefined) {
+            try {
+              const { error: updErr } = await supabase
+                .from('student_marks')
+                .update({
+                  marks: val,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('student_id', r.studentId)
+                .eq('subject', subj)
+                .eq('exam_type', 'internal2');
+
+              if (updErr) {
+                errors.push(`Failed to save marks for ${r.name} in "${subj}": ${updErr.message}`);
+              } else {
+                const cached = initialDbRecordsRef.current.get(r.studentId);
+                if (cached) cached.internal2[subj] = val;
+              }
+            } catch (err: any) {
+              errors.push(`Network error saving marks for ${r.name}: ${err?.message}`);
+            }
+          }
+        }
+      }
+
+      return { success: errors.length === 0, errors, enteredCount };
     },
     [records, maxMarks.internal2]
   );
@@ -261,6 +462,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         records,
         maxMarks,
+        loading,
+        error,
+        refreshData: loadData,
         updateAttendance,
         updateInternal1,
         updateInternal2,

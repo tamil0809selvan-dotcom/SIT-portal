@@ -35,9 +35,20 @@ const SUBJECT_CODES: Record<string, string> = {
 
 const StudentMarksView: React.FC<StudentMarksViewProps> = ({ examNumber }) => {
   const { user } = useAuth();
-  const { getStudentRecord, maxMarks } = useData();
+  const { getStudentRecord, maxMarks, loading } = useData();
   const student = user as StudentUser;
-  const record = getStudentRecord(student.id);
+  const record = student ? getStudentRecord(student.id) : undefined;
+
+  if (loading) {
+    return (
+      <div className="max-w-5xl mx-auto flex items-center justify-center py-24">
+        <div className="flex flex-col items-center gap-3 text-slate-500">
+          <div className="w-8 h-8 border-3 border-royal-600/30 border-t-royal-600 rounded-full animate-spin" />
+          <p className="text-sm font-medium">Fetching subject marks from Supabase…</p>
+        </div>
+      </div>
+    );
+  }
 
   const maxMark = examNumber === 1 ? maxMarks.internal1 : maxMarks.internal2;
   const subjectMarksMap = examNumber === 1 ? record?.internal1 : record?.internal2;
