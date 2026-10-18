@@ -5,6 +5,8 @@
 import React from 'react';
 import { Menu, Bell } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import VoiceNavigation from './VoiceNavigation';
+import ErrorBoundary from './ErrorBoundary';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -33,8 +35,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, title }) => {
           </div>
         </div>
 
-        {/* Right: notification + user badge */}
+        {/* Right: voice nav + notification + user badge */}
         <div className="flex items-center gap-2 sm:gap-3">
+          {/* Voice Navigation Assistant */}
+          <ErrorBoundary fallbackTitle="Voice Assistant Error">
+            <VoiceNavigation />
+          </ErrorBoundary>
+
           {/* Notifications button */}
           <button
             aria-label="Notifications"

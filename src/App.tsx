@@ -24,15 +24,17 @@ import FacultyMarksEntry from './pages/faculty/FacultyMarksEntry';
 
 import ProfilePage from './pages/ProfilePage';
 import SettingsPage from './pages/SettingsPage';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const App: React.FC = () => {
   return (
-    <AuthProvider>
-      <DataProvider>
-        <BrowserRouter>
-          <Routes>
-            {/* Home page */}
-            <Route path="/" element={<HomePage />} />
+    <ErrorBoundary fallbackTitle="Portal System Recovery">
+      <AuthProvider>
+        <DataProvider>
+          <BrowserRouter>
+            <Routes>
+              {/* Home page */}
+              <Route path="/" element={<HomePage />} />
 
             {/* Login pages */}
             <Route
@@ -124,6 +126,7 @@ const App: React.FC = () => {
         </BrowserRouter>
       </DataProvider>
     </AuthProvider>
+    </ErrorBoundary>
   );
 };
 

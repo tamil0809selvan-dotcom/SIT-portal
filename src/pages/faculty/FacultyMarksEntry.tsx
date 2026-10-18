@@ -80,6 +80,7 @@ const FacultyMarksEntry: React.FC<FacultyMarksEntryProps> = ({ examNumber }) => 
               : `Internal Exam ${examNumber} marks for "${selectedSubject}" saved. All fields are currently unentered (empty/null).`,
         });
       } else {
+        console.error('[FacultyMarksEntry] Save failed with errors:', result.errors);
         setMessage({
           type: 'error',
           text:
@@ -88,6 +89,7 @@ const FacultyMarksEntry: React.FC<FacultyMarksEntryProps> = ({ examNumber }) => 
         });
       }
     } catch (err: any) {
+      console.error('[FacultyMarksEntry] Save exception:', err);
       setMessage({ type: 'error', text: err?.message || 'Failed to save marks to Supabase.' });
     } finally {
       setSaving(false);

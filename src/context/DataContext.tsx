@@ -21,6 +21,8 @@ interface DataContextType {
   saveAttendance: () => Promise<{ success: boolean; errors: string[]; enteredCount?: number }>;
   saveInternal1: (subject?: string) => Promise<{ success: boolean; errors: string[]; enteredCount?: number }>;
   saveInternal2: (subject?: string) => Promise<{ success: boolean; errors: string[]; enteredCount?: number }>;
+  saveDirectMark: (studentId: string, examType: 'internal1' | 'internal2', subject: string, mark: number | null) => Promise<{ success: boolean; errors: string[] }>;
+  saveDirectAttendance: (studentId: string, percentage: number | null) => Promise<{ success: boolean; errors: string[] }>;
   getStudentRecord: (studentId: string) => StudentRecord | undefined;
 }
 
@@ -35,6 +37,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Keep a reference of records originally loaded from Supabase so we know existing saved values
   const initialDbRecordsRef = useRef<Map<string, { attendance: number | null; internal1: SubjectMarksMap; internal2: SubjectMarksMap }>>(new Map());
+  // Synchronous reference to current records to prevent stale state issues
+  const recordsRef = useRef<StudentRecord[]>([]);
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
 
   // ── Load Data from Supabase according to Role ──
   const loadData = useCallback(async () => {
@@ -72,7 +79,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const [studentsRes, attRes, marksRes] = await Promise.all([
           supabase.from('students').select('sno, student_id, name, department').order('sno', { ascending: true }),
           supabase.from('attendance').select('student_id, percentage'),
-          supabase.from('student_marks').select('id, student_id, subject, exam_type, marks'),
+          supabase.from('student_marks').select('id, student_id, subject, exam_type, marks').limit(2000),
         ]);
 
         if (studentsRes.error) {
@@ -223,13 +230,17 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // ── Local In-Memory Updates (prior to saving) ──
   const updateAttendance = useCallback((sno: number, value: number | null) => {
-    setRecords((prev) => prev.map((r) => (r.sno === sno ? { ...r, attendance: value } : r)));
+    setRecords((prev) => {
+      const updated = prev.map((r) => (r.sno === sno ? { ...r, attendance: value } : r));
+      recordsRef.current = updated;
+      return updated;
+    });
   }, []);
 
   const updateInternal1 = useCallback((sno: number, subject: string, value: number | null) => {
-    setRecords((prev) =>
-      prev.map((r) => {
-        if (r.sno !== sno) return r;
+    setRecords((prev) => {
+      const updated = prev.map((r) => {
+        if (r.sno !== sno && r.sno !== Number(sno) && r.studentId !== String(sno)) return r;
         return {
           ...r,
           internal1: {
@@ -237,14 +248,16 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             [subject]: value,
           },
         };
-      })
-    );
+      });
+      recordsRef.current = updated;
+      return updated;
+    });
   }, []);
 
   const updateInternal2 = useCallback((sno: number, subject: string, value: number | null) => {
-    setRecords((prev) =>
-      prev.map((r) => {
-        if (r.sno !== sno) return r;
+    setRecords((prev) => {
+      const updated = prev.map((r) => {
+        if (r.sno !== sno && r.sno !== Number(sno) && r.studentId !== String(sno)) return r;
         return {
           ...r,
           internal2: {
@@ -252,8 +265,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             [subject]: value,
           },
         };
-      })
-    );
+      });
+      recordsRef.current = updated;
+      return updated;
+    });
   }, []);
 
   const updateMaxMark = useCallback(
@@ -304,7 +319,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 2. Save each student's entered record separately
     // Unentered values remain NULL; existing saved values must not be overwritten by blanks
     for (const r of records) {
-      if (r.attendance !== null && r.attendance !== undefined) {
+      const hasEntered = r.attendance !== null && r.attendance !== undefined;
+      const initialVal = initialDbRecordsRef.current.get(r.studentId)?.attendance ?? null;
+
+      if (hasEntered || (initialVal !== null && r.attendance === null)) {
         try {
           const { error: updErr } = await supabase
             .from('attendance')
@@ -327,8 +345,12 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
+    if (errors.length === 0) {
+      await loadData();
+    }
+
     return { success: errors.length === 0, errors, enteredCount };
-  }, [records, maxMarks.attendance]);
+  }, [records, maxMarks.attendance, loadData]);
 
   // ── Save Internal 1 Marks to Supabase ──
   const saveInternal1 = useCallback(
@@ -353,7 +375,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
       });
 
-      if (errors.length > 0) return { success: false, errors };
+      if (errors.length > 0) {
+        console.warn('[saveInternal1] Validation failed:', errors);
+        return { success: false, errors };
+      }
 
       // 2. Build upsert payloads matching exact schema:
       // student_id, exam_type: 'internal1', subject, marks (numeric value or null), updated_at
@@ -369,34 +394,62 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const subjs = subject ? [subject] : SUBJECTS;
         for (const subj of subjs) {
           const rawVal = r.internal1[subj];
-          const val =
-            rawVal !== null && rawVal !== undefined && (rawVal as any) !== ''
-              ? Number(rawVal)
-              : null;
+          const hasEnteredMark = rawVal !== null && rawVal !== undefined && (rawVal as any) !== '';
+          const val = hasEnteredMark ? Number(rawVal) : null;
 
-          payloads.push({
-            student_id: r.studentId,
-            exam_type: 'internal1',
-            subject: subj,
-            marks: val,
-            updated_at: new Date().toISOString(),
-          });
+          // Check previous value in initial DB cache
+          const initialVal = initialDbRecordsRef.current.get(r.studentId)?.internal1[subj] ?? null;
+
+          // Only upsert rows where:
+          // a) Faculty has entered a numeric mark
+          // b) OR faculty explicitly deleted a previously saved mark (changing it from non-null to null)
+          // Unentered blank records (which are already null) are NEVER sent so we avoid overwriting with NULL
+          if (hasEnteredMark || (initialVal !== null && val === null)) {
+            payloads.push({
+              student_id: r.studentId,
+              exam_type: 'internal1',
+              subject: subj,
+              marks: val,
+              updated_at: new Date().toISOString(),
+            });
+          }
         }
       }
 
+      console.log(`[saveInternal1] Subject: "${subject || 'ALL'}" | Payloads count: ${payloads.length}`);
+      console.log('[saveInternal1] Payload before saving:', payloads);
+
+      if (payloads.length === 0) {
+        console.log('[saveInternal1] No marks entered or changed. Skipping database write.');
+        return { success: true, errors: [], enteredCount: 0 };
+      }
+
       try {
-        const { error: upsertErr } = await supabase
+        const { data: upsertData, error: upsertErr } = await supabase
           .from('student_marks')
-          .upsert(payloads, { onConflict: 'student_id,exam_type,subject' });
+          .upsert(payloads, { onConflict: 'student_id,exam_type,subject' })
+          .select();
+
+        console.log('[saveInternal1] Supabase upsert response:', { data: upsertData, error: upsertErr });
 
         if (upsertErr) {
-          errors.push(`Failed to save marks: ${upsertErr.message}`);
+          console.error('[saveInternal1] Supabase upsert failed:', upsertErr);
+          errors.push(`Supabase error saving marks: ${upsertErr.message || JSON.stringify(upsertErr)}`);
           return { success: false, errors };
         }
+
+        // Update local ref cache with saved values
+        payloads.forEach((p) => {
+          const cached = initialDbRecordsRef.current.get(p.student_id);
+          if (cached) {
+            cached.internal1[p.subject] = p.marks;
+          }
+        });
 
         // 3. Refresh UI from Supabase after successful save
         await loadData();
       } catch (err: any) {
+        console.error('[saveInternal1] Unexpected error during save:', err);
         errors.push(`Network or server error saving marks: ${err?.message || 'Unknown error'}`);
         return { success: false, errors };
       }
@@ -429,7 +482,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
       });
 
-      if (errors.length > 0) return { success: false, errors };
+      if (errors.length > 0) {
+        console.warn('[saveInternal2] Validation failed:', errors);
+        return { success: false, errors };
+      }
 
       // 2. Build upsert payloads matching exact schema:
       // student_id, exam_type: 'internal2', subject, marks (numeric value or null), updated_at
@@ -445,34 +501,62 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const subjs = subject ? [subject] : SUBJECTS;
         for (const subj of subjs) {
           const rawVal = r.internal2[subj];
-          const val =
-            rawVal !== null && rawVal !== undefined && (rawVal as any) !== ''
-              ? Number(rawVal)
-              : null;
+          const hasEnteredMark = rawVal !== null && rawVal !== undefined && (rawVal as any) !== '';
+          const val = hasEnteredMark ? Number(rawVal) : null;
 
-          payloads.push({
-            student_id: r.studentId,
-            exam_type: 'internal2',
-            subject: subj,
-            marks: val,
-            updated_at: new Date().toISOString(),
-          });
+          // Check previous value in initial DB cache
+          const initialVal = initialDbRecordsRef.current.get(r.studentId)?.internal2[subj] ?? null;
+
+          // Only upsert rows where:
+          // a) Faculty has entered a numeric mark
+          // b) OR faculty explicitly deleted a previously saved mark (changing it from non-null to null)
+          // Unentered blank records (which are already null) are NEVER sent so we avoid overwriting with NULL
+          if (hasEnteredMark || (initialVal !== null && val === null)) {
+            payloads.push({
+              student_id: r.studentId,
+              exam_type: 'internal2',
+              subject: subj,
+              marks: val,
+              updated_at: new Date().toISOString(),
+            });
+          }
         }
       }
 
+      console.log(`[saveInternal2] Subject: "${subject || 'ALL'}" | Payloads count: ${payloads.length}`);
+      console.log('[saveInternal2] Payload before saving:', payloads);
+
+      if (payloads.length === 0) {
+        console.log('[saveInternal2] No marks entered or changed. Skipping database write.');
+        return { success: true, errors: [], enteredCount: 0 };
+      }
+
       try {
-        const { error: upsertErr } = await supabase
+        const { data: upsertData, error: upsertErr } = await supabase
           .from('student_marks')
-          .upsert(payloads, { onConflict: 'student_id,exam_type,subject' });
+          .upsert(payloads, { onConflict: 'student_id,exam_type,subject' })
+          .select();
+
+        console.log('[saveInternal2] Supabase upsert response:', { data: upsertData, error: upsertErr });
 
         if (upsertErr) {
-          errors.push(`Failed to save marks: ${upsertErr.message}`);
+          console.error('[saveInternal2] Supabase upsert failed:', upsertErr);
+          errors.push(`Supabase error saving marks: ${upsertErr.message || JSON.stringify(upsertErr)}`);
           return { success: false, errors };
         }
+
+        // Update local ref cache with saved values
+        payloads.forEach((p) => {
+          const cached = initialDbRecordsRef.current.get(p.student_id);
+          if (cached) {
+            cached.internal2[p.subject] = p.marks;
+          }
+        });
 
         // 3. Refresh UI from Supabase after successful save
         await loadData();
       } catch (err: any) {
+        console.error('[saveInternal2] Unexpected error during save:', err);
         errors.push(`Network or server error saving marks: ${err?.message || 'Unknown error'}`);
         return { success: false, errors };
       }
@@ -482,9 +566,150 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [records, maxMarks.internal2, loadData]
   );
 
+  // ── Direct Single-Record Saves (Ideal for Voice Entry & Real-time Writes) ──
+  const saveDirectMark = useCallback(
+    async (
+      studentId: string,
+      examType: 'internal1' | 'internal2',
+      subject: string,
+      mark: number | null
+    ): Promise<{ success: boolean; errors: string[] }> => {
+      const max = examType === 'internal1' ? maxMarks.internal1 : maxMarks.internal2;
+      if (mark !== null) {
+        if (isNaN(mark) || mark < 0 || mark > max) {
+          return {
+            success: false,
+            errors: [`Mark ${mark} is invalid. Allowed range: 0–${max}.`],
+          };
+        }
+      }
+
+      const payload = {
+        student_id: studentId,
+        exam_type: examType,
+        subject: subject,
+        marks: mark,
+        updated_at: new Date().toISOString(),
+      };
+
+      console.log('[saveDirectMark] Writing to Supabase:', payload);
+
+      try {
+        const { data, error: upsertErr } = await supabase
+          .from('student_marks')
+          .upsert([payload], { onConflict: 'student_id,exam_type,subject' })
+          .select();
+
+        if (upsertErr) {
+          console.error('[saveDirectMark] Supabase upsert error:', upsertErr);
+          return { success: false, errors: [upsertErr.message] };
+        }
+
+        console.log('[saveDirectMark] Successfully persisted to Supabase:', data);
+
+        // Update local ref cache
+        const cached = initialDbRecordsRef.current.get(studentId);
+        if (cached) {
+          if (examType === 'internal1') {
+            cached.internal1[subject] = mark;
+          } else {
+            cached.internal2[subject] = mark;
+          }
+        }
+
+        // Update in-memory state immediately
+        setRecords((prev) => {
+          const updated = prev.map((r) => {
+            if (r.studentId !== studentId) return r;
+            return {
+              ...r,
+              [examType]: {
+                ...r[examType],
+                [subject]: mark,
+              },
+            };
+          });
+          recordsRef.current = updated;
+          return updated;
+        });
+
+        // Trigger refetch from Supabase to guarantee entire portal is in sync
+        await loadData();
+
+        return { success: true, errors: [] };
+      } catch (err: any) {
+        console.error('[saveDirectMark] Unexpected error:', err);
+        return { success: false, errors: [err?.message || 'Server error saving mark'] };
+      }
+    },
+    [maxMarks.internal1, maxMarks.internal2, loadData]
+  );
+
+  const saveDirectAttendance = useCallback(
+    async (
+      studentId: string,
+      percentage: number | null
+    ): Promise<{ success: boolean; errors: string[] }> => {
+      if (percentage !== null) {
+        if (isNaN(percentage) || percentage < 0 || percentage > maxMarks.attendance) {
+          return {
+            success: false,
+            errors: [`Attendance ${percentage}% is out of valid range (0–${maxMarks.attendance}%).`],
+          };
+        }
+      }
+
+      console.log('[saveDirectAttendance] Writing to Supabase for', studentId, percentage);
+
+      try {
+        const { data, error: updErr } = await supabase
+          .from('attendance')
+          .update({
+            percentage: percentage,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('student_id', studentId)
+          .select();
+
+        if (updErr) {
+          console.error('[saveDirectAttendance] Supabase update error:', updErr);
+          return { success: false, errors: [updErr.message] };
+        }
+
+        console.log('[saveDirectAttendance] Successfully persisted attendance:', data);
+
+        // Update cache
+        const cached = initialDbRecordsRef.current.get(studentId);
+        if (cached) {
+          cached.attendance = percentage;
+        }
+
+        // Update in-memory state immediately
+        setRecords((prev) => {
+          const updated = prev.map((r) =>
+            r.studentId === studentId ? { ...r, attendance: percentage } : r
+          );
+          recordsRef.current = updated;
+          return updated;
+        });
+
+        // Trigger refetch from Supabase
+        await loadData();
+
+        return { success: true, errors: [] };
+      } catch (err: any) {
+        console.error('[saveDirectAttendance] Unexpected error:', err);
+        return { success: false, errors: [err?.message || 'Server error saving attendance'] };
+      }
+    },
+    [maxMarks.attendance, loadData]
+  );
+
   const getStudentRecord = useCallback(
     (studentId: string): StudentRecord | undefined => {
-      return records.find((r) => r.studentId === studentId);
+      return (recordsRef.current.length > 0 ? recordsRef.current : records).find(
+        (r) => r.studentId === studentId
+      );
     },
     [records]
   );
@@ -504,6 +729,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         saveAttendance,
         saveInternal1,
         saveInternal2,
+        saveDirectMark,
+        saveDirectAttendance,
         getStudentRecord,
       }}
     >
